@@ -1,78 +1,81 @@
 import os
+import time
 import requests
-import yfinance as yf
-import pandas as pd
-from datetime import datetime
-import pytz
+from tradingview_ta import TA_Handler, Interval, Exchange
 
 # 1. SETUP CREDENTIALS
 TELEGRAM_BOT_TOKEN = os.getenv("TG_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 def send_telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ ERROR: Secrets are missing!")
-        return
-        
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Error sending msg: {e}")
+    except:
+        pass
 
 def check_market():
-    print("🤖 Scanner starting...")
+    print("🤖 Live Scanner starting...")
     
-    # 2. FETCH DATA
+    # 2. FETCH LIVE DATA FROM TRADINGVIEW
     try:
-        # Fetch slightly more data to ensure EMA calculation is accurate
-        df = yf.download("^NSEI", period="5d", interval="5m", progress=False)
-        if df.empty: 
-            print("⚠️ Market data empty.")
-            return
+        nifty = TA_Handler(
+            symbol="NIFTY",
+            screener="india",
+            exchange="NSE",
+            interval=Interval.INTERVAL_5_MINUTES
+        )
+        analysis = nifty.get_analysis()
     except Exception as e:
-        print(f"❌ Yahoo Error: {e}")
+        print(f"❌ Connection Error: {e}")
         return
 
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    # 3. GET INDICATORS (Using Proxies)
+    # We use 10 for 9, 20 for 21, 30 for 33
+    indicators = analysis.indicators
     
-    # 3. CALCULATE INDICATORS (Using Standard Pandas - No External Libs)
-    # EMA Formula: ewm(span=Length, adjust=False).mean()
-    try:
-        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
-        df['EMA_33'] = df['Close'].ewm(span=33, adjust=False).mean()
-    except Exception as e:
-        print(f"❌ Math Error: {e}")
-        return
+    close = indicators['close']
+    open_price = indicators['open']
+    high = indicators['high']
+    low = indicators['low']
     
-    # Get Last Candle
-    curr = df.iloc[-2]
-    prev = df.iloc[-3]
-    price = curr['Close']
+    ema_9  = indicators['EMA10'] # Approx for 9
+    ema_21 = indicators['EMA20'] # Approx for 21
+    ema_33 = indicators['EMA30'] # Approx for 33
     
-    print(f"🔍 Checked Market at {price:.2f}. Math is working!")
-    send_telegram(f"🔔 System Check: Bot is alive! Nifty is at {price:.2f}")
+    print(f"🔍 NIFTY LIVE: {close} | EMA21: {ema_21:.2f} | EMA33: {ema_33:.2f}")
 
     # 4. SIGNAL LOGIC
     msg = ""
     
-    # BUY (CE)
-    if curr['Close'] > curr['EMA_21']:
-        if curr['Low'] <= curr['EMA_9'] and curr['Close'] > curr['EMA_9'] and curr['Close'] > curr['Open']:
-            msg = f"🚀 *CE PULLBACK ALERT*\nPrice: {price:.2f}\nBounce off 9 EMA"
-        elif curr['Close'] > curr['EMA_9'] and prev['Close'] <= curr['EMA_9']:
-            msg = f"🚀 *CE MOMENTUM ALERT*\nPrice: {price:.2f}\nCrossed 9 EMA"
+    # Candle Color
+    is_green = close > open_price
+    is_red = close < open_price
+    
+    # --- BUY (CE) ---
+    # Trend: Close > EMA 21
+    if close > ema_21:
+        # Pullback: Low touched EMA 9 (10) and closed Green
+        if low <= ema_9 and close > ema_9 and is_green:
+             msg = f"⚡ *LIVE CE ALERT: PULLBACK*\nPrice: {close}\nBounce off EMA 10"
+        # Momentum: Crossed above EMA 9 (10)
+        elif close > ema_9 and open_price < ema_9:
+             msg = f"⚡ *LIVE CE ALERT: MOMENTUM*\nPrice: {close}\nCrossed EMA 10"
 
-    # SELL (PE)
-    if curr['High'] >= curr['EMA_33'] and curr['Close'] < curr['EMA_33'] and curr['Close'] < curr['Open']:
-        msg = f"📉 *PE 33-REJECTION ALERT*\nPrice: {price:.2f}\nResisted at 33 EMA"
-    elif curr['Close'] < curr['EMA_21']:
-        if curr['High'] >= curr['EMA_9'] and curr['Close'] < curr['EMA_9'] and curr['Close'] < curr['Open']:
-            msg = f"📉 *PE PULLBACK ALERT*\nPrice: {price:.2f}\nRejected 9 EMA"
-        elif curr['Close'] < curr['EMA_9'] and prev['Close'] >= curr['EMA_9']:
-            msg = f"📉 *PE MOMENTUM ALERT*\nPrice: {price:.2f}\nDropped below 9 EMA"
+    # --- SELL (PE) ---
+    # Rejection: High touched EMA 33 (30) but Close < EMA 33 (30)
+    if high >= ema_33 and close < ema_33 and is_red:
+        msg = f"⚡ *LIVE PE ALERT: 33 REJECTION*\nPrice: {close}\nResisted at EMA 30"
+        
+    elif close < ema_21:
+        # Pullback: High touched EMA 9 (10) and closed Red
+        if high >= ema_9 and close < ema_9 and is_red:
+            msg = f"⚡ *LIVE PE ALERT: PULLBACK*\nPrice: {close}\nRejected EMA 10"
+        # Momentum: Dropped below EMA 9 (10)
+        elif close < ema_9 and open_price > ema_9:
+             msg = f"⚡ *LIVE PE ALERT: MOMENTUM*\nPrice: {close}\nDropped below EMA 10"
 
     if msg:
         send_telegram(msg)
