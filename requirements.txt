@@ -1,7 +1,4 @@
 yfinance
-https://github.com/twopirllc/pandas-ta/archive/development.zip
 pandas
 requests
-pytz
 lxml
-numpy<2.0.0
