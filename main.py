@@ -53,6 +53,7 @@ def check_market():
     price = curr['Close']
     
     print(f"🔍 Checked Market at {price:.2f}. Math is working!")
+    send_telegram(f"🔔 System Check: Bot is alive! Nifty is at {price:.2f}")
 
     # 4. SIGNAL LOGIC
     msg = ""
