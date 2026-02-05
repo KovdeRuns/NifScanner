@@ -46,6 +46,7 @@ def check_market():
     ema_33 = indicators['EMA30'] # Approx for 33
     
     print(f"🔍 NIFTY LIVE: {close} | EMA21: {ema_21:.2f} | EMA33: {ema_33:.2f}")
+    send_telegram(f"🔔 TEST ALERT: Nifty is LIVE at {close}")
 
     # 4. SIGNAL LOGIC
     msg = ""
