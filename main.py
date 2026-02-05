@@ -1,40 +1,60 @@
 import os
 import requests
 import yfinance as yf
-import pandas_ta as ta
 import pandas as pd
 from datetime import datetime
 import pytz
 
-# GET CREDENTIALS FROM GITHUB SECRETS
-TELEGRAM_BOT_TOKEN = os.environ["TG_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TG_CHAT_ID"]
+# 1. SETUP CREDENTIALS
+TELEGRAM_BOT_TOKEN = os.getenv("TG_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("❌ ERROR: Secrets are missing!")
+        return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error sending msg: {e}")
 
 def check_market():
-    # Fetch Data (Yahoo Finance)
-    df = yf.download("^NSEI", period="1d", interval="5m", progress=False)
-    if df.empty: return
+    print("🤖 Scanner starting...")
+    
+    # 2. FETCH DATA
+    try:
+        # Fetch slightly more data to ensure EMA calculation is accurate
+        df = yf.download("^NSEI", period="5d", interval="5m", progress=False)
+        if df.empty: 
+            print("⚠️ Market data empty.")
+            return
+    except Exception as e:
+        print(f"❌ Yahoo Error: {e}")
+        return
 
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     
-    # Indicators
-    df['EMA_9'] = ta.ema(df['Close'], length=9)
-    df['EMA_21'] = ta.ema(df['Close'], length=21)
-    df['EMA_33'] = ta.ema(df['Close'], length=33)
+    # 3. CALCULATE INDICATORS (Using Standard Pandas - No External Libs)
+    # EMA Formula: ewm(span=Length, adjust=False).mean()
+    try:
+        df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        df['EMA_33'] = df['Close'].ewm(span=33, adjust=False).mean()
+    except Exception as e:
+        print(f"❌ Math Error: {e}")
+        return
     
-    curr = df.iloc[-2] # Last completed candle
+    # Get Last Candle
+    curr = df.iloc[-2]
     prev = df.iloc[-3]
     price = curr['Close']
     
-    # SIGNAL LOGIC
+    print(f"🔍 Checked Market at {price:.2f}. Math is working!")
+
+    # 4. SIGNAL LOGIC
     msg = ""
     
     # BUY (CE)
@@ -55,7 +75,7 @@ def check_market():
 
     if msg:
         send_telegram(msg)
-        print("Alert Sent")
+        print("✅ Alert Sent")
     else:
         print("No Signal Found")
 
