@@ -1,88 +1,98 @@
 import os
+import json
 import time
 import requests
-from tradingview_ta import TA_Handler, Interval, Exchange
+import pytz
+from datetime import datetime
+from tradingview_ta import TA_Handler, Interval
 
-# 1. SETUP CREDENTIALS
-TELEGRAM_BOT_TOKEN = os.getenv("TG_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID")
+# --- 1. LOAD CONFIGURATION ---
+try:
+    with open('config.json', 'r') as f:
+        CONFIG = json.load(f)
+except FileNotFoundError:
+    # Fallback defaults if file is missing
+    CONFIG = {"SYMBOL": "NIFTY", "START_TIME": [9, 45], "END_TIME": [15, 0], "SCAN_INTERVAL_MIN": 5, "ATR_MULTIPLIER": 3.0, "ADX_THRESHOLD": 20}
 
-def send_telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload)
-    except:
-        pass
+# --- 2. SETUP ENVIRONMENT ---
+TELEGRAM_TOKEN = os.getenv("TG_TOKEN")
+CHAT_ID = os.getenv("TG_CHAT_ID")
+IST = pytz.timezone('Asia/Kolkata')
 
-def check_market():
-    print("🤖 Live Scanner starting...")
+def is_market_session():
+    now = datetime.now(IST)
+    if now.weekday() > 4: return False # Skip Sat/Sun
     
-    # 2. FETCH LIVE DATA FROM TRADINGVIEW
+    start_h, start_m = CONFIG["START_TIME"]
+    end_h, end_m = CONFIG["END_TIME"]
+    
+    session_start = now.replace(hour=start_h, minute=start_m, second=0)
+    session_end = now.replace(hour=end_h, minute=end_m, second=0)
+    return session_start <= now <= session_end
+
+def send_alert(message):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("⚠️ Missing Telegram Credentials")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        nifty = TA_Handler(
-            symbol="NIFTY",
+        requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
+    except Exception as e:
+        print(f"❌ Telegram Error: {e}")
+
+# --- 3. THE LOGIC ---
+def scan_market():
+    print(f"🔍 Scanning {CONFIG['SYMBOL']} at {datetime.now(IST).strftime('%H:%M:%S')}")
+    try:
+        handler = TA_Handler(
+            symbol=CONFIG['SYMBOL'],
             screener="india",
             exchange="NSE",
             interval=Interval.INTERVAL_5_MINUTES
         )
-        analysis = nifty.get_analysis()
-    except Exception as e:
-        print(f"❌ Connection Error: {e}")
-        return
+        analysis = handler.get_analysis()
+        ind = analysis.indicators
 
-    # 3. GET INDICATORS (Using Proxies)
-    # We use 10 for 9, 20 for 21, 30 for 33
-    indicators = analysis.indicators
-    
-    close = indicators['close']
-    open_price = indicators['open']
-    high = indicators['high']
-    low = indicators['low']
-    
-    ema_9  = indicators['EMA10'] # Approx for 9
-    ema_21 = indicators['EMA20'] # Approx for 21
-    ema_33 = indicators['EMA30'] # Approx for 33
-    
-    print(f"🔍 NIFTY LIVE: {close} | EMA21: {ema_21:.2f} | EMA33: {ema_33:.2f}")
-    send_telegram(f"🔔 TEST ALERT: Nifty is LIVE at {close}")
-
-    # 4. SIGNAL LOGIC
-    msg = ""
-    
-    # Candle Color
-    is_green = close > open_price
-    is_red = close < open_price
-    
-    # --- BUY (CE) ---
-    # Trend: Close > EMA 21
-    if close > ema_21:
-        # Pullback: Low touched EMA 9 (10) and closed Green
-        if low <= ema_9 and close > ema_9 and is_green:
-             msg = f"⚡ *LIVE CE ALERT: PULLBACK*\nPrice: {close}\nBounce off EMA 10"
-        # Momentum: Crossed above EMA 9 (10)
-        elif close > ema_9 and open_price < ema_9:
-             msg = f"⚡ *LIVE CE ALERT: MOMENTUM*\nPrice: {close}\nCrossed EMA 10"
-
-    # --- SELL (PE) ---
-    # Rejection: High touched EMA 33 (30) but Close < EMA 33 (30)
-    if high >= ema_33 and close < ema_33 and is_red:
-        msg = f"⚡ *LIVE PE ALERT: 33 REJECTION*\nPrice: {close}\nResisted at EMA 30"
+        # Data Points
+        close = ind['close']
+        ema10 = ind['EMA10'] # Using 10 as proxy for 9
+        ema20 = ind['EMA20'] # Using 20 as proxy for 21
+        atr   = ind.get('ATR', 15)
+        adx   = ind.get('ADX', 0)
         
-    elif close < ema_21:
-        # Pullback: High touched EMA 9 (10) and closed Red
-        if high >= ema_9 and close < ema_9 and is_red:
-            msg = f"⚡ *LIVE PE ALERT: PULLBACK*\nPrice: {close}\nRejected EMA 10"
-        # Momentum: Dropped below EMA 9 (10)
-        elif close < ema_9 and open_price > ema_9:
-             msg = f"⚡ *LIVE PE ALERT: MOMENTUM*\nPrice: {close}\nDropped below EMA 10"
+        # Robust Stop Loss distance (ATR 3.0)
+        sl_dist = round(atr * CONFIG['ATR_MULTIPLIER'], 1)
 
-    if msg:
-        send_telegram(msg)
-        print("✅ Alert Sent")
-    else:
-        print("No Signal Found")
+        # ENTRY LOGIC (Mounir Validated)
+        if adx > CONFIG['ADX_THRESHOLD']:
+            # CE SETUP: Trend is Up + Pullback to 9 EMA
+            if close > ema20 and ind['low'] <= ema10 and close > ema10:
+                msg = (f"🚀 *NIFTY CE SETUP*\n"
+                       f"Price: {close}\n"
+                       f"🛡️ Robust SL: {round(close - sl_dist, 1)}\n"
+                       f"Exit: Trail with ATR-3")
+                send_alert(msg)
 
+            # PE SETUP: Trend is Down + Pullback to 9 EMA
+            elif close < ema20 and ind['high'] >= ema10 and close < ema10:
+                msg = (f"📉 *NIFTY PE SETUP*\n"
+                       f"Price: {close}\n"
+                       f"🛡️ Robust SL: {round(close + sl_dist, 1)}\n"
+                       f"Exit: Trail with ATR-3")
+                send_alert(msg)
+                
+    except Exception as e:
+        print(f"❌ Scanner Error: {e}")
+
+# --- 4. EXECUTION ---
 if __name__ == "__main__":
-    check_market()
+    print("💎 System 12.1 Ready")
+    while True:
+        if is_market_session():
+            scan_market()
+            # Wait for next 5-minute candle
+            time.sleep(CONFIG['SCAN_INTERVAL_MIN'] * 60)
+        else:
+            # Check every 10 mins if market is about to open
+            print("💤 Outside session hours. Waiting...")
+            time.sleep(600)
