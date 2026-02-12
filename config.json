@@ -1,0 +1,8 @@
+{
+    "SYMBOL": "NIFTY",
+    "START_TIME": [9, 45],
+    "END_TIME": [15, 0],
+    "SCAN_INTERVAL_MIN": 5,
+    "ATR_MULTIPLIER": 3.0,
+    "ADX_THRESHOLD": 20
+}
