@@ -1,3 +1,4 @@
 tradingview_ta
 requests
 pandas
+pytz
